@@ -21,6 +21,7 @@ dependencies = [
     "gymnasium>=0.29",
     "stable-baselines3>=2.0",
     "torch>=2.0",
+    "torchdiffeq>=0.2.5",
     "tqdm>=4.67.3",
     "rich>=14.3.3",
 ]
@@ -29,6 +30,7 @@ dependencies = [
 dev = [
     "ipython",
     "jupyterlab",
+    "setuptools<82",
     "tensorboard",
 ]
 

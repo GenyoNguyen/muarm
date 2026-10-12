@@ -4,7 +4,7 @@ Model loading: builds the MuJoCo model programmatically from scene.xml +
 task-specific body snippets via from_xml_string, avoiding relative-path
 include issues when the XML is not co-located with the robot assets.
 
-Action: 4-D [dx, dy, dz, grip] in [-1, 1]  (cartesian delta + gripper)
+Action: 4-D Cartesian delta + gripper, or 7-D joint delta for obstacle tasks
 EE body: "hand"
 """
 from __future__ import annotations
@@ -23,6 +23,11 @@ if str(ROOT) not in sys.path:
 
 from kinematic.panda_kinematics import PandaKinematics
 from learning.envs.base_env import MuJocoRobotEnv
+from learning.envs.tasks.reach_obstacles import OBSTACLE_CENTERS, OBSTACLE_RADIUS
+from learning.envs.tasks.reach_obstacles_2 import (
+    OBSTACLE_CENTERS as OBSTACLE_CENTERS_2,
+    OBSTACLE_RADIUS as OBSTACLE_RADIUS_2,
+)
 
 # --- Paths ------------------------------------------------------------------
 _FRANKA_DIR   = ROOT / "models" / "franka_emika_panda"
@@ -33,11 +38,31 @@ _MESH_DIR     = _FRANKA_DIR / "assets"
 # Workspace limits [m]
 _WS_LOW  = np.array([0.20, -0.50, 0.05], dtype=np.float64)
 _WS_HIGH = np.array([0.80,  0.50, 0.75], dtype=np.float64)
+_N_ARM_JOINTS = 7
+_JOINT_CONTROL_TASKS = {"reach_obstacles", "reach_obstacles_2"}
+_REACH_OBSTACLES_START_Q = np.array(
+    [-0.186, -0.133, -0.363, -2.436, -0.340, 1.426, -0.930]
+)
 
 # --- Task body snippets (injected into worldbody) ---------------------------
+def _obstacle_geoms(centers, radius: float = OBSTACLE_RADIUS) -> str:
+    return "\n".join(
+        f'    <geom name="reach_obstacle_{i}" type="sphere" '
+        f'pos="{x} {y} {z}" size="{radius}" rgba="0.25 0.35 0.85 1"/>'
+        for i, (x, y, z) in enumerate(centers)
+    )
+
 _TASK_BODIES: dict[str, str] = {
     "reach": """
     <site name="target" type="sphere" size="0.02" rgba="1 0 0 0.5" pos="0.5 0 0.3"/>
+""",
+    "reach_obstacles": f"""
+    <site name="target" type="sphere" size="0.02" rgba="1 0 0 0.5" pos="0.5 0 0.3"/>
+{_obstacle_geoms(OBSTACLE_CENTERS)}
+""",
+    "reach_obstacles_2": f"""
+    <site name="target" type="sphere" size="0.02" rgba="1 0 0 0.5" pos="0.5 0 0.3"/>
+{_obstacle_geoms(OBSTACLE_CENTERS_2, OBSTACLE_RADIUS_2)}
 """,
     "push": """
     <site name="target" type="sphere" size="0.02" rgba="1 0 0 0.5" pos="0.55 0 0.03"/>
@@ -76,13 +101,18 @@ def _build_model(task_name: str) -> mujoco.MjModel:
                 with open(fpath, "rb") as fh:
                     assets[fname] = fh.read()
 
-    return mujoco.MjModel.from_xml_string(xml, assets)
+    model = mujoco.MjModel.from_xml_string(xml, assets)
+    if task_name == "reach_obstacles":
+        # The regular Panda home keyframe intersects the taller obstacle stack.
+        model.key_qpos[0, :_N_ARM_JOINTS] = _REACH_OBSTACLES_START_Q
+        model.key_ctrl[0, :_N_ARM_JOINTS] = _REACH_OBSTACLES_START_Q
+    return model
 
 
 class FrankaPandaEnv(MuJocoRobotEnv):
     """Franka Emika Panda manipulation environment.
 
-    Action:      4-D [dx, dy, dz, grip] in [-1, 1]
+    Action:      4-D Cartesian delta + grip, or 7-D joint delta for obstacle tasks
     Observation: Dict{"observation":(obs_dim,), "achieved_goal":(3,), "desired_goal":(3,)}
     """
 
@@ -93,11 +123,14 @@ class FrankaPandaEnv(MuJocoRobotEnv):
         model_path: str | None = None,
         render_mode: str | None = None,
         n_substeps: int = 20,
+        physics_timestep: float | None = None,
         horizon: int = 200,
         action_scale: float = 0.03,
+        joint_action_scale: float = 0.05,
         obs_dim: int = 32,
     ):
         self.action_scale = action_scale
+        self.joint_action_scale = joint_action_scale
         self.obs_dim = obs_dim
         self.task_name = task_name
 
@@ -110,6 +143,10 @@ class FrankaPandaEnv(MuJocoRobotEnv):
             prebuilt = mujoco.MjModel.from_xml_path(model_path)
         else:
             prebuilt = _build_model(task_name)
+        if physics_timestep is not None:
+            if physics_timestep <= 0:
+                raise ValueError("physics_timestep must be positive.")
+            prebuilt.opt.timestep = physics_timestep
 
         super().__init__(
             model_path=None,
@@ -125,7 +162,13 @@ class FrankaPandaEnv(MuJocoRobotEnv):
     # ------------------------------------------------------------------
 
     def _build_spaces(self) -> None:
-        self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(4,), dtype=np.float32)
+        action_dim = _N_ARM_JOINTS if self.task_name in _JOINT_CONTROL_TASKS else 4
+        self.action_space = spaces.Box(
+            low=-1.0,
+            high=1.0,
+            shape=(action_dim,),
+            dtype=np.float32,
+        )
         self.observation_space = spaces.Dict({
             "observation":   spaces.Box(-np.inf, np.inf, shape=(self.obs_dim,), dtype=np.float32),
             "achieved_goal": spaces.Box(-np.inf, np.inf, shape=(3,), dtype=np.float32),
@@ -152,6 +195,19 @@ class FrankaPandaEnv(MuJocoRobotEnv):
 
     def _apply_action(self, action: np.ndarray) -> None:
         action = np.asarray(action, dtype=np.float64)
+        if self.task_name in _JOINT_CONTROL_TASKS:
+            q = self.data.qpos[:_N_ARM_JOINTS]
+            q_target = q + self.joint_action_scale * action[:_N_ARM_JOINTS]
+            q_target = np.clip(
+                q_target,
+                self.model.jnt_range[:_N_ARM_JOINTS, 0],
+                self.model.jnt_range[:_N_ARM_JOINTS, 1],
+            )
+            self.data.ctrl[:_N_ARM_JOINTS] = q_target
+            if self.model.nu > _N_ARM_JOINTS:
+                self.data.ctrl[_N_ARM_JOINTS] = 255.0
+            return
+
         ee     = self.get_ee_pos()
         target = np.clip(ee + self.action_scale * action[:3], _WS_LOW, _WS_HIGH)
 
@@ -159,17 +215,16 @@ class FrankaPandaEnv(MuJocoRobotEnv):
         tf[:3, :3] = np.diag([1.0, -1.0, -1.0])
         tf[:3, 3]  = target
 
-        q_seed = self.data.qpos[:7].copy()
+        q_seed = self.data.qpos[:_N_ARM_JOINTS].copy()
         q_sol, _ = self._kin.ik(tf, q_init=q_seed, max_iters=100)
-        self.data.ctrl[:7] = q_sol[:7]
+        self.data.ctrl[:_N_ARM_JOINTS] = q_sol[:_N_ARM_JOINTS]
 
-        if self.model.nu > 7:
+        if self.model.nu > _N_ARM_JOINTS:
             grip = float(np.clip((float(action[3]) + 1.0) * 0.5 * 255.0, 0.0, 255.0))
-            self.data.ctrl[7] = grip
+            self.data.ctrl[_N_ARM_JOINTS] = grip
 
     def get_ee_pos(self) -> np.ndarray:
         return self.data.body("hand").xpos.copy()
 
     def get_ee_body(self) -> str:
         return "hand"
-

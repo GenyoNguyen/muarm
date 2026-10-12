@@ -135,6 +135,7 @@ class MuJocoRobotEnv(gym.Env, ABC):
         achieved = self.task.achieved_goal(self.model, self.data, self)
         ee = self.get_ee_pos()
         info = {"ee_to_obj": float(np.linalg.norm(ee - achieved))}
+        info.update(self.task.get_info(self.model, self.data, self))
         reward = float(self.task.compute_reward(achieved, self._goal, info))
 
         self._step_count += 1
@@ -161,8 +162,16 @@ class MuJocoRobotEnv(gym.Env, ABC):
 
     def close(self):
         if self._viewer is not None:
-            self._viewer.close()
+            viewer = self._viewer
             self._viewer = None
+            sim_ref = getattr(viewer, "_sim", None)
+            viewer.close()
+
+            # launch_passive closes on a daemon thread. Wait for that thread
+            # before Python's atexit handlers terminate GLFW.
+            if callable(sim_ref):
+                while sim_ref() is not None:
+                    time.sleep(0.01)
 
     # ------------------------------------------------------------------
     # Rendering helper – subclasses may override

@@ -18,6 +18,7 @@ opencv-python>=4.5
 gymnasium>=0.29
 stable-baselines3>=2.0
 torch>=2.0
+torchdiffeq>=0.2.5
 
 # Optional utilities
 pandas>=1.5

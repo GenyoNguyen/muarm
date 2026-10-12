@@ -28,6 +28,10 @@ class BaseTask(ABC):
     def achieved_goal(self, model, data, env) -> np.ndarray:
         """Return the currently achieved goal (3,)."""
 
+    def get_info(self, model, data, env) -> dict:
+        """Return task-specific step information."""
+        return {}
+
     @abstractmethod
     def compute_reward(self, achieved_goal: np.ndarray, desired_goal: np.ndarray, info: dict) -> float:
         """Return scalar reward."""
