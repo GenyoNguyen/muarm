@@ -39,6 +39,7 @@ _MESH_DIR     = _FRANKA_DIR / "assets"
 _WS_LOW  = np.array([0.20, -0.50, 0.05], dtype=np.float64)
 _WS_HIGH = np.array([0.80,  0.50, 0.75], dtype=np.float64)
 _N_ARM_JOINTS = 7
+# TODO: Joint control tasks should be self-defined, not needing this explicit definition
 _JOINT_CONTROL_TASKS = {"reach_obstacles", "reach_obstacles_2"}
 _REACH_OBSTACLES_START_Q = np.array(
     [-0.186, -0.133, -0.363, -2.436, -0.340, 1.426, -0.930]
@@ -102,6 +103,7 @@ def _build_model(task_name: str) -> mujoco.MjModel:
                     assets[fname] = fh.read()
 
     model = mujoco.MjModel.from_xml_string(xml, assets)
+    # TODO: Unify the start configurations for all reach_obstacles environments
     if task_name == "reach_obstacles":
         # The regular Panda home keyframe intersects the taller obstacle stack.
         model.key_qpos[0, :_N_ARM_JOINTS] = _REACH_OBSTACLES_START_Q
@@ -130,10 +132,12 @@ class FrankaPandaEnv(MuJocoRobotEnv):
         obs_dim: int = 32,
     ):
         self.action_scale = action_scale
+        # TODO: This can be merged with action_scale
         self.joint_action_scale = joint_action_scale
         self.obs_dim = obs_dim
         self.task_name = task_name
 
+        # TODO: [LOW] Check the kinematics mechanism
         # Pinocchio kinematics
         self._kin = PandaKinematics(ee_frame="hand")
         self._kin.build_from_mjcf(str(_PANDA_MJCF))
@@ -195,6 +199,8 @@ class FrankaPandaEnv(MuJocoRobotEnv):
 
     def _apply_action(self, action: np.ndarray) -> None:
         action = np.asarray(action, dtype=np.float64)
+        # TODO: Decision of whether to use joint actions or position actions should be
+        # taken from the task itself.
         if self.task_name in _JOINT_CONTROL_TASKS:
             q = self.data.qpos[:_N_ARM_JOINTS]
             q_target = q + self.joint_action_scale * action[:_N_ARM_JOINTS]
@@ -204,6 +210,7 @@ class FrankaPandaEnv(MuJocoRobotEnv):
                 self.model.jnt_range[:_N_ARM_JOINTS, 1],
             )
             self.data.ctrl[:_N_ARM_JOINTS] = q_target
+            # TODO: This sets the control of the gripper to a fixed value. We may not need this.
             if self.model.nu > _N_ARM_JOINTS:
                 self.data.ctrl[_N_ARM_JOINTS] = 255.0
             return

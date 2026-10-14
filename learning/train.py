@@ -82,6 +82,8 @@ def main():
     parser.add_argument("--cdflow-device", type=str, default="cpu",
                         help="PyTorch device for CDFlow training")
     args = parser.parse_args()
+
+    # TODO: Uhh... WTF?
     if args.task == "cdflow_button" and args.algo != "cdflow":
         parser.error("cdflow_button is the offline CDFlow contact task; use --algo cdflow")
 
